@@ -165,7 +165,6 @@ typedef enum{
     PDF_OBJECT_DICTIONARY,
     PDF_OBJECT_STREAM,
     PDF_OBJECT_NULL,
-    PDF_OBJECT_INDIRECT,
     PDF_OBJECT_REFRENCE,
 } PDFObject_type;
 
@@ -181,7 +180,6 @@ const char* PDFObject_type_str[] = {
     [PDF_OBJECT_DICTIONARY] = "PDF_OBJECT_DICTIONARY",
     [PDF_OBJECT_STREAM] = "PDF_OBJECT_STREAM",
     [PDF_OBJECT_NULL] = "PDF_OBJECT_NULL",
-    [PDF_OBJECT_INDIRECT] = "PDF_OBJECT_INDIRECT",
     [PDF_OBJECT_REFRENCE] = "PDF_OBJECT_REFRENCE",
 };
 
@@ -228,7 +226,6 @@ struct PDFObject{
         PDFObject_Dictionary dictionary;
         String_View stream;
         //NULL is nothing
-        PDFObject_Indirect indirect;
         PDFObject_Refrence refrence;
     };
 };
@@ -317,13 +314,12 @@ PDFObject* PDFObject_null(String_View sv){
     });
 }
 
-PDFObject* PDFObject_indirect(size_t id, size_t generation, PDFObject* object){
-    return PDFObject_init((PDFObject){
-        .type = PDF_OBJECT_INDIRECT,
-        .indirect.id = id,
-        .indirect.generation = generation,
-        .indirect.object = object,
-    });
+PDFObject_Indirect PDFObject_indirect(size_t id, size_t generation, PDFObject* object){
+    return (PDFObject_Indirect){ 
+        .id = id,
+        .generation = generation,
+        .object = object,
+    };
 }
 
 PDFObject* PDFObject_refrence(size_t id, size_t generation){
@@ -364,7 +360,7 @@ void Objects_qsort(Objects* objects){
     qsort(objects->items,objects->len,sizeof *objects->items, Object_sort);
 }
 
-int write_PDFObject(String_Builder* sb, Objects* objects, PDFObject* object){
+int write_PDFObject(String_Builder* sb, PDFObject* object){
     if(!object || object->type == PDF_OBJECT_NULL) {
         sb_append(sb, "null");
         return 0;
@@ -389,7 +385,7 @@ int write_PDFObject(String_Builder* sb, Objects* objects, PDFObject* object){
             sb_append(sb, "[ ");
             for(size_t i = 0; i < object->array.len; i++){
                 PDFObject* child = object->array.items[i];
-                if(write_PDFObject(sb, objects,child) != 0) return 1;
+                if(write_PDFObject(sb,child) != 0) return 1;
                 sb_append(sb, " ");
             }
             sb_append(sb, "]");
@@ -409,22 +405,12 @@ int write_PDFObject(String_Builder* sb, Objects* objects, PDFObject* object){
                     printf("dictionary entry key has to be type name\n");
                     return 1;
                 }
-                if(write_PDFObject(sb,objects,entry->key) != 0) return 1;
+                if(write_PDFObject(sb,entry->key) != 0) return 1;
                 sb_append(sb," ");
-                if(write_PDFObject(sb,objects,entry->value) != 0) return 1;
+                if(write_PDFObject(sb,entry->value) != 0) return 1;
                 sb_append(sb," ");
             }
             sb_append(sb,">>");
-        } return 0;
-        case PDF_OBJECT_INDIRECT: {
-            da_push(objects, ((Object){
-                .id = object->indirect.id,
-                .generation = object->indirect.generation,
-                .offset = sb->len,
-            }));
-            sb_appendf(sb, "%zu %zu obj ",object->indirect.id,object->indirect.generation);
-            if(write_PDFObject(sb,objects,object->indirect.object) != 0) return 1;
-            sb_append(sb, " endobj\n");
         } return 0;
         default: {
             printf("jinjer %s not implemented\n", PDFObject_type_str[object->type]);
@@ -435,11 +421,7 @@ int write_PDFObject(String_Builder* sb, Objects* objects, PDFObject* object){
     return 1;
 }
 
-int write_pdf(String_Builder* sb, Objects* objects, PDFObject* pdf){
-    if(pdf->type != PDF_OBJECT_ARRAY){
-        printf("root pdf object has to be array of indirects\n");
-        return 1;
-    }
+int write_pdf(String_Builder* sb, Objects* objects, PDFObject_Indirect* pdf,size_t pdf_len){
     sb->len = 0;
     objects->len = 0;
     //header
@@ -451,13 +433,16 @@ int write_pdf(String_Builder* sb, Objects* objects, PDFObject* pdf){
     String_Builder* temp2 = &sb_3;
 
     //body
-    for(size_t i = 0; i < pdf->array.len; i++){
-        PDFObject* object = pdf->array.items[i];
-        if(object->type != PDF_OBJECT_INDIRECT){
-            printf("root pdf object has to be array of indirects\n");
-            return 1;
-        }
-        if(write_PDFObject(sb,objects,object) != 0) return 1;
+    for(size_t i = 0; i < pdf_len; i++){
+        PDFObject_Indirect* object = &pdf[i];
+        da_push(objects, ((Object){
+            .id = object->id,
+            .generation = object->generation,
+            .offset = sb->len,
+        }));
+        sb_appendf(sb, "%zu %zu obj ",object->id,object->generation);
+        if(write_PDFObject(sb,object->object) != 0) return 1;
+        sb_append(sb, " endobj\n");
     }
 
     //xref
@@ -507,7 +492,7 @@ int main(int argc, char** argv){
     size_t page_content = ++ids;
     String_Builder sa = {0};
 
-    PDFObject* pdf = PDFObject_array((PDFObject*[]){
+    PDFObject_Indirect pdf[] = {
         PDFObject_indirect(
             catalogue,0,
             PDFObject_dictionary((PDFObject_Dictionary_Entry[]){
@@ -576,12 +561,11 @@ int main(int argc, char** argv){
                 "ET"
             ))
         ),
-        NULL,
-    });
+    };
 
     String_Builder sb = {0};
     Objects objects = {0};
-    if(write_pdf(&sb, &objects,pdf) != 0) return 1;
+    if(write_pdf(&sb, &objects,pdf,sizeof pdf/sizeof *pdf) != 0) return 1;
 
     FILE* f = fopen(argv[1], "wb");
     fwrite(sb.items,1,sb.len,f);
