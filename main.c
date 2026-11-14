@@ -45,6 +45,235 @@ int sb_append_sb(String_Builder* a, String_Builder* b){
 }
 
 typedef struct{
+    String_Builder* sb;
+    size_t offset,len;
+} String_View;
+
+String_View sv_allocf(String_Builder* sb, const char* fmt, ...){
+    String_View sv = {.sb = sb,.offset = sb->len };
+    va_list list;
+    va_start(list);
+    sb_appendf(sb,fmt,list);
+    va_end(list);
+    sv.len = sb->len - sv.offset;
+    return sv;
+}
+
+String_View sv_alloc(String_Builder* sb, const char* str){
+    String_View sv = {.sb = sb,.offset = sb->len };
+    sb_append(sb,str);
+    sv.len = sb->len - sv.offset;
+    return sv;
+}
+
+int sb_append_sv(String_Builder* sb, String_View sv){
+    if(!sv.sb || sv.len >= sv.sb->len) return 0;
+    da_reserve(sb,sv.len);
+    memcpy(sb->items+sb->len,sv.sb->items+sv.offset,sv.len);
+    sb->len += sv.len;
+    return sv.len;
+}
+
+const char* str_from_sv(String_View sv){
+    if(!sv.sb || sv.offset >= sv.sb->len) return NULL;
+    return sv.sb->items+sv.offset;
+}
+
+
+typedef enum{
+    PDF_OBJECT_INVALID = 0,
+    PDF_OBJECT_BOOLEAN,
+    PDF_OBJECT_NUMBER_FLOAT,
+    PDF_OBJECT_NUMBER_SIGNED,
+    PDF_OBJECT_NUMBER_UNSIGNED,
+    PDF_OBJECT_STRING,
+    PDF_OBJECT_NAME,
+    PDF_OBJECT_ARRAY,
+    PDF_OBJECT_DICTIONARY,
+    PDF_OBJECT_STREAM,
+    PDF_OBJECT_NULL,
+    PDF_OBJECT_INDIRECT,
+    PDF_OBJECT_REFRENCE,
+} PDFObject_type;
+
+const char* PDFObject_type_str[] = {
+    [PDF_OBJECT_INVALID] = "PDF_OBJECT_INVALID",
+    [PDF_OBJECT_BOOLEAN] = "PDF_OBJECT_BOOLEAN",
+    [PDF_OBJECT_NUMBER_FLOAT] = "PDF_OBJECT_NUMBER_FLOAT",
+    [PDF_OBJECT_NUMBER_SIGNED] = "PDF_OBJECT_NUMBER_SIGNED",
+    [PDF_OBJECT_NUMBER_UNSIGNED] = "PDF_OBJECT_NUMBER_UNSIGNED",
+    [PDF_OBJECT_STRING] = "PDF_OBJECT_STRING",
+    [PDF_OBJECT_NAME] = "PDF_OBJECT_NAME",
+    [PDF_OBJECT_ARRAY] = "PDF_OBJECT_ARRAY",
+    [PDF_OBJECT_DICTIONARY] = "PDF_OBJECT_DICTIONARY",
+    [PDF_OBJECT_STREAM] = "PDF_OBJECT_STREAM",
+    [PDF_OBJECT_NULL] = "PDF_OBJECT_NULL",
+    [PDF_OBJECT_INDIRECT] = "PDF_OBJECT_INDIRECT",
+    [PDF_OBJECT_REFRENCE] = "PDF_OBJECT_REFRENCE",
+};
+
+typedef struct PDFObject PDFObject;
+
+typedef struct{
+    PDFObject** items;
+    size_t len,cap;
+} PDFObject_Array;
+
+typedef struct{
+    PDFObject* key; //has to be type `name`
+    PDFObject* value;
+} PDFObject_Dictionary_Entry;
+
+typedef struct{
+    PDFObject_Dictionary_Entry* items;
+    size_t len,cap;
+} PDFObject_Dictionary;
+
+typedef struct{
+    size_t id;
+    size_t generation;
+    PDFObject* object;
+} PDFObject_Indirect;
+
+typedef struct{
+    size_t id;
+    size_t generation;
+} PDFObject_Refrence;
+
+//i should use atom table for strings tbh
+
+struct PDFObject{
+    PDFObject_type type;
+    union{
+        bool boolean;
+        float number_float;
+        int64_t number_signed;
+        uint64_t number_unsigned;
+        String_View string;
+        String_View name;
+        PDFObject_Array array;
+        PDFObject_Dictionary dictionary;
+        String_View stream;
+        //NULL is nothing
+        PDFObject_Indirect indirect;
+        PDFObject_Refrence refrence;
+    };
+};
+
+PDFObject* PDFObject_init(PDFObject object){
+    PDFObject* out = calloc(1,sizeof object);
+    if(!out) return NULL;
+    *out = object;
+    return out;
+}
+
+PDFObject* PDFObject_boolean(bool boolean){
+    return PDFObject_init((PDFObject){
+        .type = PDF_OBJECT_BOOLEAN,
+        .boolean = boolean,
+    });
+}
+
+PDFObject* PDFObject_number_float(float number){
+    return PDFObject_init((PDFObject){
+        .type = PDF_OBJECT_NUMBER_FLOAT,
+        .number_float = number,
+    });
+}
+
+PDFObject* PDFObject_number_signed(int64_t number){
+    return PDFObject_init((PDFObject){
+        .type = PDF_OBJECT_NUMBER_SIGNED,
+        .number_signed = number,
+    });
+}
+
+PDFObject* PDFObject_number_unsigned(uint64_t number){
+    return PDFObject_init((PDFObject){
+        .type = PDF_OBJECT_NUMBER_UNSIGNED,
+        .number_unsigned = number,
+    });
+}
+
+PDFObject* PDFObject_string(String_View sv){
+    return PDFObject_init((PDFObject){
+        .type = PDF_OBJECT_STRING,
+        .string = sv,
+    });
+}
+
+PDFObject* PDFObject_name(String_View sv){
+    return PDFObject_init((PDFObject){
+        .type = PDF_OBJECT_NAME,
+        .name = sv,
+    });
+}
+
+PDFObject* PDFObject_array(PDFObject** items){ //last has to be NULL
+    PDFObject array = {
+        .type = PDF_OBJECT_ARRAY,
+    };
+    while(*items){
+        da_push(&array.array,*items);
+        items++;
+    }
+    return PDFObject_init(array);
+}
+
+PDFObject* PDFObject_dictionary(PDFObject_Dictionary_Entry* items){ //last has to be NULL
+    PDFObject dictionary = {
+        .type = PDF_OBJECT_DICTIONARY,
+    };
+    while(items->key){
+        da_push(&dictionary.dictionary,*items);
+        items++;
+    }
+    return PDFObject_init(dictionary);
+}
+
+PDFObject* PDFObject_stream(String_View sv){
+    return PDFObject_init((PDFObject){
+        .type = PDF_OBJECT_STREAM,
+        .stream = sv,
+    });
+}
+
+PDFObject* PDFObject_null(String_View sv){
+    return PDFObject_init((PDFObject){
+        .type = PDF_OBJECT_NULL,
+    });
+}
+
+PDFObject* PDFObject_indirect(size_t id, size_t generation, PDFObject* object){
+    return PDFObject_init((PDFObject){
+        .type = PDF_OBJECT_INDIRECT,
+        .indirect.id = id,
+        .indirect.generation = generation,
+        .indirect.object = object,
+    });
+}
+
+PDFObject* PDFObject_refrence(size_t id, size_t generation){
+    return PDFObject_init((PDFObject){
+        .type = PDF_OBJECT_REFRENCE,
+        .refrence.id = id,
+        .refrence.generation = generation,
+    });
+}
+
+PDFObject* PDF_name_str(String_Builder* sb, const char* key){
+    String_View sv = sv_alloc(sb,key);
+    return PDFObject_name(sv);
+}
+
+PDFObject_Dictionary_Entry PDF_entry(String_Builder* sb, const char* key, PDFObject* value){
+    return (PDFObject_Dictionary_Entry){
+        .key = PDF_name_str(sb,key),
+        .value = value,
+    };
+}
+
+typedef struct{
     size_t id;
     size_t generation;
     size_t offset;
@@ -67,29 +296,83 @@ void Objects_qsort(Objects* objects){
     qsort(objects->items,objects->len,sizeof *objects->items, Object_sort);
 }
 
-size_t Objects_get_new_id(Objects* objects){
-    return ++objects->last_id;
+int write_PDFObject(String_Builder* sb, Objects* objects, PDFObject* object){
+    if(!object || object->type == PDF_OBJECT_NULL) {
+        sb_append(sb, "null");
+        return 0;
+    }
+
+    switch(object->type){
+        case PDF_OBJECT_STREAM: {
+            sb_appendf(sb, "<< /Length %zu >>\nstream\n",object->stream.len);
+            sb_append_sv(sb,object->stream);
+            sb_append(sb,"endstream\n");
+        } return 0;
+        case PDF_OBJECT_NUMBER_FLOAT: {
+            sb_appendf(sb,"%f",object->number_float);
+        } return 0;
+        case PDF_OBJECT_NUMBER_SIGNED: {
+            sb_appendf(sb,"%lld",object->number_signed);
+        } return 0;
+        case PDF_OBJECT_NUMBER_UNSIGNED: {
+            sb_appendf(sb,"%llu",object->number_unsigned);
+        } return 0;
+        case PDF_OBJECT_ARRAY: {
+            sb_append(sb, "[ ");
+            for(size_t i = 0; i < object->array.len; i++){
+                PDFObject* child = object->array.items[i];
+                if(write_PDFObject(sb, objects,child) != 0) return 1;
+                sb_append(sb, " ");
+            }
+            sb_append(sb, " ]");
+        } return 0;
+        case PDF_OBJECT_REFRENCE: {
+            sb_appendf(sb,"%zu %zu R",object->refrence.id, object->refrence.generation);
+        } return 0;
+        case PDF_OBJECT_NAME: {
+            sb_appendf(sb,"/%.*s",object->name.len,str_from_sv(object->name));
+        } return 0;
+        case PDF_OBJECT_DICTIONARY: {
+            sb_append(sb,"<< ");
+            for(size_t i = 0; i < object->dictionary.len; i++){
+                PDFObject_Dictionary_Entry* entry = &object->dictionary.items[i];
+                if(!entry->key || entry->key->type != PDF_OBJECT_NAME){
+                    printf("dictionary entry key has to be type name\n");
+                    return 1;
+                }
+                if(write_PDFObject(sb,objects,entry->key) != 0) return 1;
+                sb_append(sb," ");
+                if(write_PDFObject(sb,objects,entry->value) != 0) return 1;
+                sb_append(sb," ");
+            }
+            sb_append(sb," >>\n");
+        } return 0;
+        case PDF_OBJECT_INDIRECT: {
+            da_push(objects, ((Object){
+                .id = object->indirect.id,
+                .generation = object->indirect.generation,
+                .offset = sb->len,
+            }));
+            sb_appendf(sb, "%zu %zu obj\n",object->indirect.id,object->indirect.generation);
+            if(write_PDFObject(sb,objects,object->indirect.object) != 0) return 1;
+            sb_append(sb, "endobj\n");
+        } return 0;
+        default: {
+            printf("jinjer %s not implemented\n", PDFObject_type_str[object->type]);
+            assert(false && "Unimplemented");
+        }
+    }
+
+    return 1;
 }
 
-void sb_append_object(String_Builder* sb, Objects* objects, size_t id, size_t generation, String_Builder* contents){
-    da_push(objects, ((Object){
-        .id = id,
-        .generation = generation,
-        .offset = sb->len,
-    }));
-    sb_appendf(sb, "%zu %zu obj\n",id,generation);
-    sb_append_sb(sb,contents);
-    sb_append(sb, "endobj\n");
-}
-
-void sb_append_stream(String_Builder* sb, String_Builder* contents){
-    sb_appendf(sb, "<< /Length %d >>\n",contents->len);
-    sb_appendf(sb, "stream\n");
-    sb_append_sb(sb,contents);
-    sb_appendf(sb, "endstream\n");
-}
-
-int write_pdf(String_Builder* sb, Objects* objects){
+int write_pdf(String_Builder* sb, Objects* objects, PDFObject* pdf){
+    if(pdf->type != PDF_OBJECT_ARRAY){
+        printf("root pdf object has to be array of indirects\n");
+        return 1;
+    }
+    sb->len = 0;
+    objects->len = 0;
     //header
     sb_appendf(sb,"%PDF-1.0\n%\xE0\xE3\xCF\xD3\n");
 
@@ -99,44 +382,14 @@ int write_pdf(String_Builder* sb, Objects* objects){
     String_Builder* temp2 = &sb_3;
 
     //body
-    size_t catalogue = Objects_get_new_id(objects);
-    size_t pages = Objects_get_new_id(objects);
-    size_t font_resource = Objects_get_new_id(objects);
-    size_t page = Objects_get_new_id(objects);
-    size_t page_content = Objects_get_new_id(objects);
-
-    //catalog
-    temp->len = 0;
-    sb_appendf(temp, "<< /Type /Catalog /Pages %zu 0 R >>\n",pages);
-    sb_append_object(sb,objects,catalogue,0,temp);
-
-    temp->len = 0;
-    sb_appendf(temp, "<< /Type /Pages /Kids [%zu 0 R] /Count 1 >>\n",page);
-    sb_append_object(sb,objects,pages,0,temp);
-
-    temp->len = 0;
-    sb_appendf(temp, "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>\n");
-    sb_append_object(sb,objects,font_resource,0,temp);
-
-    temp->len = 0;
-    sb_appendf(temp, "<< /Type /Page /Parent %zu 0 R /MediaBox [0 0 595.28 841.89] /Resources << /Font << /F1 %zu 0 R >> >> /Contents %zu 0 R >>\n",pages,font_resource,page_content);
-    sb_append_object(sb,objects,page,0,temp);
-
-    temp->len = 0;
-    temp2->len = 0;
-    sb_appendf(temp2, "BT\n");
-    sb_appendf(temp2, "/F1 26 Tf\n");
-    sb_appendf(temp2, "72 770 Td\n");
-    sb_appendf(temp2, "(This shit actually works!) Tj\n");
-    sb_appendf(temp2, "ET\n");
-
-    sb_appendf(temp2, "BT\n");
-    sb_appendf(temp2, "/F1 26 Tf\n");
-    sb_appendf(temp2, "72 550 Td\n");
-    sb_appendf(temp2, "(SECOND!) Tj\n");
-    sb_appendf(temp2, "ET\n");
-    sb_append_stream(temp,temp2);
-    sb_append_object(sb,objects,page_content,0,temp);
+    for(size_t i = 0; i < pdf->array.len; i++){
+        PDFObject* object = pdf->array.items[i];
+        if(object->type != PDF_OBJECT_INDIRECT){
+            printf("root pdf object has to be array of indirects\n");
+            return 1;
+        }
+        if(write_PDFObject(sb,objects,object) != 0) return 1;
+    }
 
     //xref
     size_t xref_offset = sb->len;
@@ -160,6 +413,8 @@ int write_pdf(String_Builder* sb, Objects* objects){
         prev = object;
     }
 
+    size_t catalogue = 1;
+
     //trailer
     sb_appendf(sb,"trailer\n");
     sb_appendf(sb, "<< /Size %zu /Root %zu %zu R >>\n",real_len,catalogue,0);
@@ -171,13 +426,94 @@ int write_pdf(String_Builder* sb, Objects* objects){
 
 int main(int argc, char** argv){
     if(argc < 2){
-        fprintf(stderr,"Provide filename");
+        fprintf(stderr,"Provide filename\n");
         return 1;
     }
 
+    size_t ids = 0;
+    size_t catalogue = ++ids;
+    size_t pages = ++ids;
+    size_t font = ++ids;
+    size_t page = ++ids;
+    size_t page_content = ++ids;
+    String_Builder sa_ = {0}; //string arena
+    String_Builder* sa = &sa_;
+
+    PDFObject* pdf = PDFObject_array((PDFObject*[]){
+        PDFObject_indirect(
+            catalogue,0,
+            PDFObject_dictionary((PDFObject_Dictionary_Entry[]){
+                PDF_entry(sa, "Type", PDF_name_str(sa, "Catalog")),
+                PDF_entry(sa, "Pages", PDFObject_refrence(pages,0)),
+                {0},
+            })
+        ),
+        PDFObject_indirect(
+            pages,0,
+            PDFObject_dictionary((PDFObject_Dictionary_Entry[]){
+                PDF_entry(sa, "Type", PDF_name_str(sa, "Pages")),
+                PDF_entry(sa, "Kids", PDFObject_array((PDFObject*[]){
+                    PDFObject_refrence(page,0),
+                    NULL,
+                })),
+                PDF_entry(sa, "Count", PDFObject_number_unsigned(1)),
+                {0},
+            })
+        ),
+        PDFObject_indirect(
+            font,0,
+            PDFObject_dictionary((PDFObject_Dictionary_Entry[]){
+                PDF_entry(sa, "Type", PDF_name_str(sa, "Font")),
+                PDF_entry(sa, "Subtype", PDF_name_str(sa, "Type1")),
+                PDF_entry(sa, "BaseFont", PDF_name_str(sa, "Helvetica")),
+                {0},
+            })
+        ),
+        PDFObject_indirect(
+            page,0,
+            PDFObject_dictionary((PDFObject_Dictionary_Entry[]){
+                PDF_entry(sa, "Type", PDF_name_str(sa, "Page")),
+                PDF_entry(sa, "Parent", PDFObject_refrence(pages,0)),
+                PDF_entry(sa, "MediaBox", PDFObject_array((PDFObject*[]){
+                    PDFObject_number_float(0),
+                    PDFObject_number_float(0),
+                    PDFObject_number_float(595.28),
+                    PDFObject_number_float(841.89),
+                    NULL,
+                })),
+                PDF_entry(sa, "Resources", PDFObject_dictionary((PDFObject_Dictionary_Entry[]){
+                    PDF_entry(sa,"Font",PDFObject_dictionary((PDFObject_Dictionary_Entry[]){
+                        PDF_entry(sa,"F1",PDFObject_refrence(font,0)),
+                        {0},
+                    })),
+                    {0},
+                })),
+                PDF_entry(sa, "Contents", PDFObject_refrence(page_content,0)),
+                {0},
+            })
+        ),
+        PDFObject_indirect(
+            page_content,0,
+            PDFObject_stream(sv_alloc(sa,
+                "BT\n"
+                "/F1 26 Tf\n"
+                "80 770 Td\n"
+                "(MAN This shit really works!) Tj\n"
+                "ET\n"
+
+                "BT\n"
+                "/F1 26 Tf\n"
+                "72 550 Td\n"
+                "(SECOND!) Tj\n"
+                "ET\n"
+            ))
+        ),
+        NULL,
+    });
+
     String_Builder sb = {0};
     Objects objects = {0};
-    if(write_pdf(&sb, &objects) != 0) return 1;
+    if(write_pdf(&sb, &objects,pdf) != 0) return 1;
 
     FILE* f = fopen(argv[1], "wb");
     fwrite(sb.items,1,sb.len,f);
