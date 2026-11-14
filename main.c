@@ -304,9 +304,9 @@ int write_PDFObject(String_Builder* sb, Objects* objects, PDFObject* object){
 
     switch(object->type){
         case PDF_OBJECT_STREAM: {
-            sb_appendf(sb, "<< /Length %zu >>\nstream\n",object->stream.len);
+            sb_appendf(sb, "<< /Length %zu >>stream\n",object->stream.len);
             sb_append_sv(sb,object->stream);
-            sb_append(sb,"endstream\n");
+            sb_append(sb,"\nendstream ");
         } return 0;
         case PDF_OBJECT_NUMBER_FLOAT: {
             sb_appendf(sb,"%f",object->number_float);
@@ -324,7 +324,7 @@ int write_PDFObject(String_Builder* sb, Objects* objects, PDFObject* object){
                 if(write_PDFObject(sb, objects,child) != 0) return 1;
                 sb_append(sb, " ");
             }
-            sb_append(sb, " ]");
+            sb_append(sb, "]");
         } return 0;
         case PDF_OBJECT_REFRENCE: {
             sb_appendf(sb,"%zu %zu R",object->refrence.id, object->refrence.generation);
@@ -345,7 +345,7 @@ int write_PDFObject(String_Builder* sb, Objects* objects, PDFObject* object){
                 if(write_PDFObject(sb,objects,entry->value) != 0) return 1;
                 sb_append(sb," ");
             }
-            sb_append(sb," >>\n");
+            sb_append(sb,">>");
         } return 0;
         case PDF_OBJECT_INDIRECT: {
             da_push(objects, ((Object){
@@ -353,9 +353,9 @@ int write_PDFObject(String_Builder* sb, Objects* objects, PDFObject* object){
                 .generation = object->indirect.generation,
                 .offset = sb->len,
             }));
-            sb_appendf(sb, "%zu %zu obj\n",object->indirect.id,object->indirect.generation);
+            sb_appendf(sb, "%zu %zu obj ",object->indirect.id,object->indirect.generation);
             if(write_PDFObject(sb,objects,object->indirect.object) != 0) return 1;
-            sb_append(sb, "endobj\n");
+            sb_append(sb, " endobj\n");
         } return 0;
         default: {
             printf("jinjer %s not implemented\n", PDFObject_type_str[object->type]);
@@ -505,7 +505,7 @@ int main(int argc, char** argv){
                 "/F1 26 Tf\n"
                 "72 550 Td\n"
                 "(SECOND!) Tj\n"
-                "ET\n"
+                "ET"
             ))
         ),
         NULL,
