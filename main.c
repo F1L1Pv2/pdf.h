@@ -204,6 +204,7 @@ typedef struct{
     size_t id;
     size_t generation;
     PDFObject* object;
+    bool catalogue;
 } PDFObject_Indirect;
 
 typedef struct{
@@ -322,6 +323,15 @@ PDFObject_Indirect PDFObject_indirect(size_t id, size_t generation, PDFObject* o
     };
 }
 
+PDFObject_Indirect PDFObject_indirect_catalogue(size_t id, size_t generation, PDFObject* object){
+    return (PDFObject_Indirect){ 
+        .id = id,
+        .generation = generation,
+        .object = object,
+        .catalogue = true,
+    };
+}
+
 PDFObject* PDFObject_refrence(size_t id, size_t generation){
     return PDFObject_init((PDFObject){
         .type = PDF_OBJECT_REFRENCE,
@@ -427,14 +437,19 @@ int write_pdf(String_Builder* sb, Objects* objects, PDFObject_Indirect* pdf,size
     //header
     sb_appendf(sb,"%PDF-1.0\n%\xE0\xE3\xCF\xD3\n");
 
-    String_Builder sb_2 = {0};
-    String_Builder sb_3 = {0};
-    String_Builder* temp = &sb_2;
-    String_Builder* temp2 = &sb_3;
+    size_t catalogue_id = 0;
+    size_t catalogue_generation = 0;
 
     //body
     for(size_t i = 0; i < pdf_len; i++){
         PDFObject_Indirect* object = &pdf[i];
+        if(object->catalogue){
+            if(catalogue_id != 0 && catalogue_id != object->id){
+                printf("cannot have mutiple catalogues only the ones with newer generation apply\n");
+            }
+            catalogue_id = object->id;
+            if(object->generation > catalogue_generation) catalogue_generation = object->generation;
+        }
         da_push(objects, ((Object){
             .id = object->id,
             .generation = object->generation,
@@ -443,6 +458,11 @@ int write_pdf(String_Builder* sb, Objects* objects, PDFObject_Indirect* pdf,size
         sb_appendf(sb, "%zu %zu obj ",object->id,object->generation);
         if(write_PDFObject(sb,object->object) != 0) return 1;
         sb_append(sb, " endobj\n");
+    }
+
+    if(catalogue_id == 0) {
+        printf("No catalogue object defined\n");
+        return 1;
     }
 
     //xref
@@ -467,11 +487,9 @@ int write_pdf(String_Builder* sb, Objects* objects, PDFObject_Indirect* pdf,size
         prev = object;
     }
 
-    size_t catalogue = 1;
-
     //trailer
     sb_appendf(sb,"trailer\n");
-    sb_appendf(sb, "<< /Size %zu /Root %zu %zu R >>\n",real_len,catalogue,0);
+    sb_appendf(sb, "<< /Size %zu /Root %zu %zu R >>\n",real_len,catalogue_id,catalogue_generation);
     sb_appendf(sb,"startxref\n");
     sb_appendf(sb,"%zu\n",xref_offset);
     sb_appendf(sb,"%%%%EOF\n");
@@ -493,7 +511,7 @@ int main(int argc, char** argv){
     String_Builder sa = {0};
 
     PDFObject_Indirect pdf[] = {
-        PDFObject_indirect(
+        PDFObject_indirect_catalogue(
             catalogue,0,
             PDFObject_dictionary((PDFObject_Dictionary_Entry[]){
                 PDF_entry("Type", PDFObject_name("Catalog")),
