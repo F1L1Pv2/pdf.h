@@ -67,7 +67,6 @@ String_View sv_alloc(String_Builder* sb, const char* str){
 }
 
 int sb_append_sv(String_Builder* sb, String_View sv){
-    if(!sv.sb || sv.len >= sv.sb->len) return 0;
     da_reserve(sb,sv.len);
     memcpy(sb->items+sb->len,sv.sb->items+sv.offset,sv.len);
     sb->len += sv.len;
@@ -75,8 +74,82 @@ int sb_append_sv(String_Builder* sb, String_View sv){
 }
 
 const char* str_from_sv(String_View sv){
-    if(!sv.sb || sv.offset >= sv.sb->len) return NULL;
     return sv.sb->items+sv.offset;
+}
+
+bool sv_eq(String_View a, String_View b){
+    if(a.len != b.len) return false;
+    return memcmp(a.sb->items+a.offset,b.sb->items+b.offset,a.len) == 0;
+}
+
+typedef size_t Atom;
+
+typedef struct {
+    size_t hash;
+    String_View sv;
+} AtomEntry;
+
+#define MAX_ATOMS 1024
+
+typedef struct {
+    AtomEntry* items;
+    size_t len, cap;
+    String_Builder sb;
+    size_t last_hash;
+} AtomTable;
+
+AtomTable atom_table = {0};
+
+unsigned long hash(const unsigned char *str)
+{
+    unsigned long hash = 5381;
+    int c;
+
+    while ((c = *str++))
+        hash = ((hash << 5) + hash) + c;
+
+    return hash;
+}
+
+Atom atom_from_str(const char *str)
+{
+    if(!str) return 0;
+
+    String_Builder sb = {0};
+    sb.items = (char*)&str;
+    String_View temp_sv = {
+        .sb = &sb,
+    };
+    {
+        size_t len = strlen(str);
+        if(!len) return 0;
+        temp_sv.len = len;
+    }
+
+    size_t h = hash((const unsigned char *)str);
+
+    for (size_t i = 0; i < atom_table.len; ++i) {
+        AtomEntry *entry = &atom_table.items[i];
+
+        if (entry->hash == h && sv_eq(entry->sv, temp_sv)) {
+            return i;
+        }
+    }
+
+    String_View sv = sv_alloc(&atom_table.sb, str);
+
+    da_push(&atom_table, ((AtomEntry) {
+        .hash = h,
+        .sv = sv,
+    }));
+
+    return atom_table.len - 1;
+}
+
+String_View sv_from_atom(Atom atom)
+{
+    assert(atom < atom_table.len);
+    return atom_table.items[atom].sv;
 }
 
 
@@ -150,7 +223,7 @@ struct PDFObject{
         int64_t number_signed;
         uint64_t number_unsigned;
         String_View string;
-        String_View name;
+        Atom name;
         PDFObject_Array array;
         PDFObject_Dictionary dictionary;
         String_View stream;
@@ -202,10 +275,10 @@ PDFObject* PDFObject_string(String_View sv){
     });
 }
 
-PDFObject* PDFObject_name(String_View sv){
+PDFObject* PDFObject_name(const char* name){
     return PDFObject_init((PDFObject){
         .type = PDF_OBJECT_NAME,
-        .name = sv,
+        .name = atom_from_str(name),
     });
 }
 
@@ -261,14 +334,9 @@ PDFObject* PDFObject_refrence(size_t id, size_t generation){
     });
 }
 
-PDFObject* PDF_name_str(String_Builder* sb, const char* key){
-    String_View sv = sv_alloc(sb,key);
-    return PDFObject_name(sv);
-}
-
-PDFObject_Dictionary_Entry PDF_entry(String_Builder* sb, const char* key, PDFObject* value){
+PDFObject_Dictionary_Entry PDF_entry(const char* key, PDFObject* value){
     return (PDFObject_Dictionary_Entry){
-        .key = PDF_name_str(sb,key),
+        .key = PDFObject_name(key),
         .value = value,
     };
 }
@@ -330,7 +398,8 @@ int write_PDFObject(String_Builder* sb, Objects* objects, PDFObject* object){
             sb_appendf(sb,"%zu %zu R",object->refrence.id, object->refrence.generation);
         } return 0;
         case PDF_OBJECT_NAME: {
-            sb_appendf(sb,"/%.*s",object->name.len,str_from_sv(object->name));
+            String_View name_sv = sv_from_atom(object->name);
+            sb_appendf(sb,"/%.*s",name_sv.len,str_from_sv(name_sv));
         } return 0;
         case PDF_OBJECT_DICTIONARY: {
             sb_append(sb,"<< ");
@@ -436,65 +505,64 @@ int main(int argc, char** argv){
     size_t font = ++ids;
     size_t page = ++ids;
     size_t page_content = ++ids;
-    String_Builder sa_ = {0}; //string arena
-    String_Builder* sa = &sa_;
+    String_Builder sa = {0};
 
     PDFObject* pdf = PDFObject_array((PDFObject*[]){
         PDFObject_indirect(
             catalogue,0,
             PDFObject_dictionary((PDFObject_Dictionary_Entry[]){
-                PDF_entry(sa, "Type", PDF_name_str(sa, "Catalog")),
-                PDF_entry(sa, "Pages", PDFObject_refrence(pages,0)),
+                PDF_entry("Type", PDFObject_name("Catalog")),
+                PDF_entry("Pages", PDFObject_refrence(pages,0)),
                 {0},
             })
         ),
         PDFObject_indirect(
             pages,0,
             PDFObject_dictionary((PDFObject_Dictionary_Entry[]){
-                PDF_entry(sa, "Type", PDF_name_str(sa, "Pages")),
-                PDF_entry(sa, "Kids", PDFObject_array((PDFObject*[]){
+                PDF_entry("Type", PDFObject_name("Pages")),
+                PDF_entry("Kids", PDFObject_array((PDFObject*[]){
                     PDFObject_refrence(page,0),
                     NULL,
                 })),
-                PDF_entry(sa, "Count", PDFObject_number_unsigned(1)),
+                PDF_entry("Count", PDFObject_number_unsigned(1)),
                 {0},
             })
         ),
         PDFObject_indirect(
             font,0,
             PDFObject_dictionary((PDFObject_Dictionary_Entry[]){
-                PDF_entry(sa, "Type", PDF_name_str(sa, "Font")),
-                PDF_entry(sa, "Subtype", PDF_name_str(sa, "Type1")),
-                PDF_entry(sa, "BaseFont", PDF_name_str(sa, "Helvetica")),
+                PDF_entry("Type", PDFObject_name("Font")),
+                PDF_entry("Subtype", PDFObject_name("Type1")),
+                PDF_entry("BaseFont", PDFObject_name("Helvetica")),
                 {0},
             })
         ),
         PDFObject_indirect(
             page,0,
             PDFObject_dictionary((PDFObject_Dictionary_Entry[]){
-                PDF_entry(sa, "Type", PDF_name_str(sa, "Page")),
-                PDF_entry(sa, "Parent", PDFObject_refrence(pages,0)),
-                PDF_entry(sa, "MediaBox", PDFObject_array((PDFObject*[]){
+                PDF_entry("Type", PDFObject_name("Page")),
+                PDF_entry("Parent", PDFObject_refrence(pages,0)),
+                PDF_entry("MediaBox", PDFObject_array((PDFObject*[]){
                     PDFObject_number_float(0),
                     PDFObject_number_float(0),
                     PDFObject_number_float(595.28),
                     PDFObject_number_float(841.89),
                     NULL,
                 })),
-                PDF_entry(sa, "Resources", PDFObject_dictionary((PDFObject_Dictionary_Entry[]){
-                    PDF_entry(sa,"Font",PDFObject_dictionary((PDFObject_Dictionary_Entry[]){
-                        PDF_entry(sa,"F1",PDFObject_refrence(font,0)),
+                PDF_entry("Resources", PDFObject_dictionary((PDFObject_Dictionary_Entry[]){
+                    PDF_entry("Font",PDFObject_dictionary((PDFObject_Dictionary_Entry[]){
+                        PDF_entry("F1",PDFObject_refrence(font,0)),
                         {0},
                     })),
                     {0},
                 })),
-                PDF_entry(sa, "Contents", PDFObject_refrence(page_content,0)),
+                PDF_entry("Contents", PDFObject_refrence(page_content,0)),
                 {0},
             })
         ),
         PDFObject_indirect(
             page_content,0,
-            PDFObject_stream(sv_alloc(sa,
+            PDFObject_stream(sv_alloc(&sa,
                 "BT\n"
                 "/F1 26 Tf\n"
                 "80 770 Td\n"
