@@ -272,6 +272,10 @@ PDFObject* PDFObject_string(String_View sv){
         .string = sv,
     });
 }
+PDFObject* PDFObject_string_alloc(String_Builder* sb, const char* str){
+    String_View sv = sv_alloc(sb,str);
+    return PDFObject_string(sv);
+}
 
 PDFObject* PDFObject_name(const char* name){
     return PDFObject_init((PDFObject){
@@ -370,10 +374,9 @@ void Objects_qsort(Objects* objects){
     qsort(objects->items,objects->len,sizeof *objects->items, Object_sort);
 }
 
-int write_PDFObject(String_Builder* sb, PDFObject* object){
+void write_PDFObject(String_Builder* sb, PDFObject* object){
     if(!object || object->type == PDF_OBJECT_NULL) {
         sb_append(sb, "null");
-        return 0;
     }
 
     switch(object->type){
@@ -381,61 +384,67 @@ int write_PDFObject(String_Builder* sb, PDFObject* object){
             sb_appendf(sb, "<< /Length %zu >>stream\n",object->stream.len);
             sb_append_sv(sb,object->stream);
             sb_append(sb,"\nendstream ");
-        } return 0;
+        } break;
+        case PDF_OBJECT_STRING: {
+            sb_appendf(sb,"(%.*s)",object->string.len,str_from_sv(object->string));
+        } break;
         case PDF_OBJECT_NUMBER_FLOAT: {
             sb_appendf(sb,"%f",object->number_float);
-        } return 0;
+        } break;
         case PDF_OBJECT_NUMBER_SIGNED: {
             sb_appendf(sb,"%lld",object->number_signed);
-        } return 0;
+        } break;
         case PDF_OBJECT_NUMBER_UNSIGNED: {
             sb_appendf(sb,"%llu",object->number_unsigned);
-        } return 0;
+        } break;
         case PDF_OBJECT_ARRAY: {
             sb_append(sb, "[ ");
             for(size_t i = 0; i < object->array.len; i++){
                 PDFObject* child = object->array.items[i];
-                if(write_PDFObject(sb,child) != 0) return 1;
+                write_PDFObject(sb,child);
                 sb_append(sb, " ");
             }
             sb_append(sb, "]");
-        } return 0;
+        } break;
         case PDF_OBJECT_REFRENCE: {
             sb_appendf(sb,"%zu %zu R",object->refrence.id, object->refrence.generation);
-        } return 0;
+        } break;
         case PDF_OBJECT_NAME: {
             String_View name_sv = sv_from_atom(object->name);
             sb_appendf(sb,"/%.*s",name_sv.len,str_from_sv(name_sv));
-        } return 0;
+        } break;
         case PDF_OBJECT_DICTIONARY: {
             sb_append(sb,"<< ");
             for(size_t i = 0; i < object->dictionary.len; i++){
                 PDFObject_Dictionary_Entry* entry = &object->dictionary.items[i];
+                //TODO add validation step
+                /*
                 if(!entry->key || entry->key->type != PDF_OBJECT_NAME){
                     printf("dictionary entry key has to be type name\n");
                     return 1;
                 }
-                if(write_PDFObject(sb,entry->key) != 0) return 1;
+                */
+
+                write_PDFObject(sb,entry->key);
                 sb_append(sb," ");
-                if(write_PDFObject(sb,entry->value) != 0) return 1;
+                write_PDFObject(sb,entry->value);
                 sb_append(sb," ");
             }
             sb_append(sb,">>");
-        } return 0;
+        } break;
         default: {
             printf("jinjer %s not implemented\n", PDFObject_type_str[object->type]);
             assert(false && "Unimplemented");
         }
     }
-
-    return 1;
 }
+
 
 int write_pdf(String_Builder* sb, Objects* objects, PDFObject_Indirect* pdf,size_t pdf_len){
     sb->len = 0;
     objects->len = 0;
     //header
-    sb_appendf(sb,"%PDF-1.0\n%\xE0\xE3\xCF\xD3\n");
+    sb_appendf(sb,"%PDF-1.3\n%\xE0\xE3\xCF\xD3\n");
 
     size_t catalogue_id = 0;
     size_t catalogue_generation = 0;
@@ -456,7 +465,7 @@ int write_pdf(String_Builder* sb, Objects* objects, PDFObject_Indirect* pdf,size
             .offset = sb->len,
         }));
         sb_appendf(sb, "%zu %zu obj ",object->id,object->generation);
-        if(write_PDFObject(sb,object->object) != 0) return 1;
+        write_PDFObject(sb,object->object);
         sb_append(sb, " endobj\n");
     }
 
@@ -494,6 +503,38 @@ int write_pdf(String_Builder* sb, Objects* objects, PDFObject_Indirect* pdf,size
     sb_appendf(sb,"%zu\n",xref_offset);
     sb_appendf(sb,"%%%%EOF\n");
     return 0;
+}
+
+typedef struct{
+    Atom instruction;
+    PDFObject** operands;
+} PDFInstruction;
+
+PDFInstruction PDFinstruction(const char* name, PDFObject** operands){
+    return (PDFInstruction){
+        .instruction = atom_from_str(name),
+        .operands = operands,
+    };
+}
+
+String_View sv_alloc_ContentStream(String_Builder* sb, PDFInstruction* instructions){
+    String_View sv = {.sb = sb, .offset = sb->len };
+    PDFInstruction* instruction = instructions;
+    while(instruction->instruction){
+        if(instruction->operands){
+            PDFObject** operand = instruction->operands;
+            while(*operand){
+                write_PDFObject(sb,*operand);
+                sb_append(sb," ");
+                operand++;
+            }
+        }
+        String_View inst = sv_from_atom(instruction->instruction);
+        sb_appendf(sb,"%.*s\n",inst.len,str_from_sv(inst));
+        instruction++;
+    }
+    sv.len = sb->len - sv.offset;
+    return sv;
 }
 
 int main(int argc, char** argv){
@@ -565,19 +606,22 @@ int main(int argc, char** argv){
         ),
         PDFObject_indirect(
             page_content,0,
-            PDFObject_stream(sv_alloc(&sa,
-                "BT\n"
-                "/F1 26 Tf\n"
-                "80 770 Td\n"
-                "(MAN This shit really works!) Tj\n"
-                "ET\n"
+            PDFObject_stream(
+                sv_alloc_ContentStream(&sa, (PDFInstruction[]){
+                    PDFinstruction("BT",NULL),
+                    PDFinstruction("Tf",(PDFObject*[]){PDFObject_name("F1"),PDFObject_number_unsigned(26),NULL,}),
+                    PDFinstruction("Td",(PDFObject*[]){PDFObject_number_unsigned(80),PDFObject_number_unsigned(770),NULL,}),
+                    PDFinstruction("Tj",(PDFObject*[]){PDFObject_string_alloc(&sa,"MAN THIS WORKY!"),NULL,}),
+                    PDFinstruction("ET",NULL),
 
-                "BT\n"
-                "/F1 26 Tf\n"
-                "72 550 Td\n"
-                "(SECOND!) Tj\n"
-                "ET"
-            ))
+                    PDFinstruction("BT",NULL),
+                    PDFinstruction("Tf",(PDFObject*[]){PDFObject_name("F1"),PDFObject_number_unsigned(13),NULL,}),
+                    PDFinstruction("Td",(PDFObject*[]){PDFObject_number_unsigned(50),PDFObject_number_unsigned(550),NULL,}),
+                    PDFinstruction("Tj",(PDFObject*[]){PDFObject_string_alloc(&sa,"Firsto!"),NULL,}),
+                    PDFinstruction("ET",NULL),
+                    {0},
+                })
+            )
         ),
     };
 
