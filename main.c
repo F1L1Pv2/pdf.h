@@ -79,9 +79,9 @@ const char* str_from_sv(String_View sv){
     return sv.sb->items+sv.offset;
 }
 
-bool sv_eq(String_View a, String_View b){
-    if(a.len != b.len) return false;
-    return memcmp(a.sb->items+a.offset,b.sb->items+b.offset,a.len) == 0;
+bool sv_eq(String_View a, const char* str,size_t len){
+    if(a.len != len) return false;
+    return memcmp(a.sb->items+a.offset,str,a.len) == 0;
 }
 
 typedef size_t Atom;
@@ -116,30 +116,15 @@ unsigned long hash(const unsigned char *str)
 Atom atom_from_str(const char *str)
 {
     if(!str) return 0;
-
-    String_Builder sb = {0};
-    sb.items = (char*)&str;
-    String_View temp_sv = {
-        .sb = &sb,
-    };
-    {
-        size_t len = strlen(str);
-        if(!len) return 0;
-        temp_sv.len = len;
-    }
-
+    size_t len = strlen(str);
+    if(!len) return 0;
     size_t h = hash((const unsigned char *)str);
-
     for (size_t i = 0; i < atom_table.len; ++i) {
         AtomEntry *entry = &atom_table.items[i];
-
-        if (entry->hash == h && sv_eq(entry->sv, temp_sv)) {
-            return i;
-        }
+        if (entry->hash == h && sv_eq(entry->sv, str,len)) return i;
     }
 
     String_View sv = sv_alloc(&atom_table.sb, str);
-
     da_push(&atom_table, ((AtomEntry) {
         .hash = h,
         .sv = sv,
@@ -218,8 +203,6 @@ typedef struct{
     PDFObject* dictionary;
     String_View sv;
 } PDFObject_Stream;
-
-//i should use atom table for strings tbh
 
 struct PDFObject{
     PDFObject_type type;
@@ -375,7 +358,6 @@ typedef struct{
     size_t id;
     size_t generation;
     size_t offset;
-    bool not_present;
 } Object;
 
 typedef struct{
@@ -397,6 +379,7 @@ void Objects_qsort(Objects* objects){
 void write_PDFObject(String_Builder* sb, PDFObject* object){
     if(!object || object->type == PDF_OBJECT_NULL) {
         sb_append(sb, "null");
+        return;
     }
 
     switch(object->type){
@@ -504,7 +487,7 @@ int write_pdf(String_Builder* sb, Objects* objects, PDFObject_Indirect* pdf,size
             }
         }
 
-        sb_appendf(sb,"%010zu %05zu %c\n",object->offset,object->generation, object->not_present ? 'f' : 'n');
+        sb_appendf(sb,"%010zu %05zu %c\n",object->offset,object->generation, 'n');
         prev = object;
     }
 
@@ -516,6 +499,8 @@ int write_pdf(String_Builder* sb, Objects* objects, PDFObject_Indirect* pdf,size
     sb_appendf(sb,"%%%%EOF\n");
     return 0;
 }
+
+//helpers
 
 typedef struct{
     Atom instruction;
