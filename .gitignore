@@ -1,2 +1,5 @@
 main
 *.pdf
+*.ttf
+*.o
+fonts

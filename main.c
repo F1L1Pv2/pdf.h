@@ -7,6 +7,7 @@
 #include <assert.h>
 #include "darray.h"
 #include <stdarg.h>
+#include "stb_truetype.h"
 
 typedef struct{
     char* items;
@@ -593,6 +594,89 @@ typedef struct{
     size_t len,cap;
 } PDFObject_Indirects;
 
+#define FIRST_CHAR 32
+#define LAST_CHAR 126
+
+int PDFFont(PDFObject_Indirects* pdf, String_Builder* sb,PDFObject_Array* tmp, size_t font_id,size_t font_stream_id, size_t font_descriptor_id, const char* ttf_filepath, const char* font_name){
+    FILE* f = fopen(ttf_filepath,"rb");
+    if(!f) return 1;
+
+    fseek(f,0,SEEK_END);
+    size_t size = ftell(f);
+    fseek(f,0,SEEK_SET);
+
+    String_View sv = {.sb = sb, .offset = sb->len,.len = size};
+    da_reserve(sb,size);
+    fread(sb->items+sb->len,1,size,f);
+    sb->len += size;
+    fclose(f);
+
+    da_push(pdf, PDFObject_indirect(
+        font_stream_id,0,
+        PDFObject_stream(sv)
+    ));
+
+    stbtt_fontinfo font = {0};
+
+    int offset = stbtt_GetFontOffsetForIndex(str_from_sv(sv), 0);
+    if (offset < 0 || !stbtt_InitFont(&font, str_from_sv(sv), offset))
+        return 1;
+
+    int x0, y0, x1, y1;
+    stbtt_GetFontBoundingBox(&font, &x0, &y0, &x1, &y1);
+    int ascent, descent, lineGap;
+    stbtt_GetFontVMetrics(&font, &ascent, &descent, &lineGap);
+
+    int unitsPerEm = 0;
+    stbtt_GetFontVMetrics(&font, &ascent, &descent, &lineGap);
+    float scale = stbtt_ScaleForMappingEmToPixels(&font, 1000.0f);
+
+    da_push(pdf,PDFObject_indirect(
+        font_descriptor_id,0,
+        PDFObject_dictionary(
+            PDF_entry("Type",PDFObject_name("FontDescriptor")),
+            PDF_entry("FontName",PDFObject_name(font_name)),
+            PDF_entry("Flags",PDFObject_number_unsigned(16)),
+            PDF_entry("FontBBox",PDFObject_array(
+                PDFObject_number_signed(x0),
+                PDFObject_number_signed(y0),
+                PDFObject_number_signed(x1),
+                PDFObject_number_signed(y1)
+            )),
+            PDF_entry("ItalicAngle",PDFObject_number_unsigned(0)),
+            PDF_entry("Ascent",PDFObject_number_signed(ascent)),
+            PDF_entry("Descent",PDFObject_number_signed(descent)),
+            PDF_entry("CapHeight",PDFObject_number_signed(lineGap)),
+            PDF_entry("SteamV",PDFObject_number_unsigned(80)),
+            PDF_entry("FontFile2",PDFObject_refrence(font_stream_id,0))
+        )
+    ));
+
+    tmp->len = 0;
+    for (int c = FIRST_CHAR; c <= LAST_CHAR; c++) {
+        int advance, bearing;
+        stbtt_GetCodepointHMetrics(&font, c, &advance, &bearing);
+        da_push(tmp, PDFObject_number_signed(advance * scale + 0.5f));
+    }
+    da_push(tmp,NULL);
+
+    da_push(pdf,PDFObject_indirect(
+        font_id,0,
+        PDFObject_dictionary(
+            PDF_entry("Type", PDFObject_name("Font")),
+            PDF_entry("Subtype", PDFObject_name("TrueType")),
+            PDF_entry("BaseFont", PDFObject_name(font_name)),
+            PDF_entry("FirstChar", PDFObject_number_unsigned(FIRST_CHAR)),
+            PDF_entry("LastChar", PDFObject_number_unsigned(LAST_CHAR)),
+            PDF_entry("Widths", PDFObject_array_(tmp->items)),
+            PDF_entry("Encoding", PDFObject_name("WinAnsiEncoding")),
+            PDF_entry("FontDescriptor",PDFObject_refrence(font_descriptor_id,0))
+        )
+    ));
+
+    return 0;
+}
+
 int main(int argc, char** argv){
     if(argc < 2){
         fprintf(stderr,"Provide filename\n");
@@ -605,6 +689,9 @@ int main(int argc, char** argv){
     size_t resources = ++ids;
     size_t page = ++ids;
     size_t page_content = ++ids;
+    size_t font = ++ids;
+    size_t font_descriptor = ++ids;
+    size_t font_stream = ++ids;
     String_Builder sa = {0};
     PDFObject_Array tmp = {0};
 
@@ -615,11 +702,7 @@ int main(int argc, char** argv){
         resources,0,
         PDFObject_dictionary(
             PDF_entry("Font",PDFObject_dictionary(
-                PDF_entry("F1", PDFObject_dictionary(
-                    PDF_entry("Type", PDFObject_name("Font")),
-                    PDF_entry("Subtype", PDFObject_name("Type1")),
-                    PDF_entry("BaseFont", PDFObject_name("Helvetica"))
-                ))
+                PDF_entry("F1", PDFObject_refrence(font,0))
             ))
         )
     ));
@@ -637,6 +720,7 @@ int main(int argc, char** argv){
         PDFinstruction(Tj,PDFObject_string_alloc(&sa,"Firsto!")),
         PDFinstruction(ET)
     ));
+    if(PDFFont(&pdf, &sa,&tmp, font,font_stream, font_descriptor, "fonts/font.ttf", "AgravePro") != 0) return 1;
 
     String_Builder sb = {0};
     Objects objects = {0};
