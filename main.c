@@ -11,7 +11,7 @@
 
 typedef struct{
     char* items;
-    int len,cap;
+    size_t len,cap;
 } String_Builder;
 
 int sb_appendf(String_Builder* sb, const char* fmt, ...){
@@ -381,6 +381,7 @@ void write_PDFObject(String_Builder* sb, PDFObject* object){
     }
 
     switch(object->type){
+        case PDF_OBJECT_BOOLEAN: sb_append(sb, object->boolean ? "true" : "false"); break;
         case PDF_OBJECT_STREAM: {
             sb_appendf(sb, "<< /Length %zu >> stream\n",object->stream.len);
             sb_append_sv(sb,object->stream);
