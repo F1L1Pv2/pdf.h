@@ -381,22 +381,14 @@ void write_PDFObject(String_Builder* sb, PDFObject* object){
 
     switch(object->type){
         case PDF_OBJECT_STREAM: {
-            sb_appendf(sb, "<< /Length %zu >>stream\n",object->stream.len);
+            sb_appendf(sb, "<< /Length %zu >> stream\n",object->stream.len);
             sb_append_sv(sb,object->stream);
-            sb_append(sb,"\nendstream ");
+            sb_append(sb,"endstream");
         } break;
-        case PDF_OBJECT_STRING: {
-            sb_appendf(sb,"(%.*s)",object->string.len,str_from_sv(object->string));
-        } break;
-        case PDF_OBJECT_NUMBER_FLOAT: {
-            sb_appendf(sb,"%f",object->number_float);
-        } break;
-        case PDF_OBJECT_NUMBER_SIGNED: {
-            sb_appendf(sb,"%lld",object->number_signed);
-        } break;
-        case PDF_OBJECT_NUMBER_UNSIGNED: {
-            sb_appendf(sb,"%llu",object->number_unsigned);
-        } break;
+        case PDF_OBJECT_STRING: sb_appendf(sb,"(%.*s)",object->string.len,str_from_sv(object->string)); break;
+        case PDF_OBJECT_NUMBER_FLOAT: sb_appendf(sb,"%f",object->number_float); break;
+        case PDF_OBJECT_NUMBER_SIGNED: sb_appendf(sb,"%lld",object->number_signed); break;
+        case PDF_OBJECT_NUMBER_UNSIGNED: sb_appendf(sb,"%llu",object->number_unsigned); break;
         case PDF_OBJECT_ARRAY: {
             sb_append(sb, "[ ");
             for(size_t i = 0; i < object->array.len; i++){
@@ -406,9 +398,7 @@ void write_PDFObject(String_Builder* sb, PDFObject* object){
             }
             sb_append(sb, "]");
         } break;
-        case PDF_OBJECT_REFRENCE: {
-            sb_appendf(sb,"%zu %zu R",object->refrence.id, object->refrence.generation);
-        } break;
+        case PDF_OBJECT_REFRENCE: sb_appendf(sb,"%zu %zu R",object->refrence.id, object->refrence.generation); break;
         case PDF_OBJECT_NAME: {
             String_View name_sv = sv_from_atom(object->name);
             sb_appendf(sb,"/%.*s",name_sv.len,str_from_sv(name_sv));
@@ -537,6 +527,65 @@ String_View sv_alloc_ContentStream(String_Builder* sb, PDFInstruction* instructi
     return sv;
 }
 
+PDFObject_Indirect PDFCatalogue(size_t id, size_t pages_tree){
+    return PDFObject_indirect_catalogue(
+        id,0,
+        PDFObject_dictionary((PDFObject_Dictionary_Entry[]){
+            PDF_entry("Type", PDFObject_name("Catalog")),
+            PDF_entry("Pages", PDFObject_refrence(pages_tree,0)),
+            {0},
+        })
+    );
+}
+
+ //last page has to be 0
+PDFObject_Indirect PDFPages(size_t id,PDFObject_Array* tmp, size_t* pages){
+    size_t* page = pages;
+    tmp->len = 0;
+    while(*page){
+        da_push(tmp,PDFObject_refrence(*page,0));
+        page++;
+    }
+    da_push(tmp,NULL);
+
+    return PDFObject_indirect(
+        id,0,
+        PDFObject_dictionary((PDFObject_Dictionary_Entry[]){
+            PDF_entry("Type", PDFObject_name("Pages")),
+            PDF_entry("Kids", PDFObject_array(tmp->items)),
+            PDF_entry("Count", PDFObject_number_unsigned(tmp->len-1)),
+            {0},
+        })
+    );
+}
+
+PDFObject_Indirect PDFContentStream(size_t id, String_Builder* sb, PDFInstruction* instructions){
+    return PDFObject_indirect(
+        id,0,
+        PDFObject_stream(sv_alloc_ContentStream(sb, instructions))
+    );
+}
+
+PDFObject_Indirect PDFPage(size_t id, size_t parent_id, float lx, float ly, float ux, float uy, size_t resources_id, size_t contents_id){
+    return PDFObject_indirect(
+        id,0,
+        PDFObject_dictionary((PDFObject_Dictionary_Entry[]){
+            PDF_entry("Type", PDFObject_name("Page")),
+            PDF_entry("Parent", PDFObject_refrence(parent_id,0)),
+            PDF_entry("MediaBox", PDFObject_array((PDFObject*[]){
+                PDFObject_number_float(lx),
+                PDFObject_number_float(ly),
+                PDFObject_number_float(ux),
+                PDFObject_number_float(uy),
+                NULL,
+            })),
+            PDF_entry("Resources", PDFObject_refrence(resources_id,0)),
+            PDF_entry("Contents", PDFObject_refrence(contents_id,0)),
+            {0},
+        })
+    );
+}
+
 int main(int argc, char** argv){
     if(argc < 2){
         fprintf(stderr,"Provide filename\n");
@@ -546,83 +595,45 @@ int main(int argc, char** argv){
     size_t ids = 0;
     size_t catalogue = ++ids;
     size_t pages = ++ids;
-    size_t font = ++ids;
+    size_t resources = ++ids;
     size_t page = ++ids;
     size_t page_content = ++ids;
     String_Builder sa = {0};
+    PDFObject_Array tmp = {0};
 
     PDFObject_Indirect pdf[] = {
-        PDFObject_indirect_catalogue(
-            catalogue,0,
-            PDFObject_dictionary((PDFObject_Dictionary_Entry[]){
-                PDF_entry("Type", PDFObject_name("Catalog")),
-                PDF_entry("Pages", PDFObject_refrence(pages,0)),
-                {0},
-            })
-        ),
+        PDFCatalogue(catalogue,pages),
+        PDFPages(pages,&tmp,(size_t[]){page,0}),
         PDFObject_indirect(
-            pages,0,
+            resources,0,
             PDFObject_dictionary((PDFObject_Dictionary_Entry[]){
-                PDF_entry("Type", PDFObject_name("Pages")),
-                PDF_entry("Kids", PDFObject_array((PDFObject*[]){
-                    PDFObject_refrence(page,0),
-                    NULL,
-                })),
-                PDF_entry("Count", PDFObject_number_unsigned(1)),
-                {0},
-            })
-        ),
-        PDFObject_indirect(
-            font,0,
-            PDFObject_dictionary((PDFObject_Dictionary_Entry[]){
-                PDF_entry("Type", PDFObject_name("Font")),
-                PDF_entry("Subtype", PDFObject_name("Type1")),
-                PDF_entry("BaseFont", PDFObject_name("Helvetica")),
-                {0},
-            })
-        ),
-        PDFObject_indirect(
-            page,0,
-            PDFObject_dictionary((PDFObject_Dictionary_Entry[]){
-                PDF_entry("Type", PDFObject_name("Page")),
-                PDF_entry("Parent", PDFObject_refrence(pages,0)),
-                PDF_entry("MediaBox", PDFObject_array((PDFObject*[]){
-                    PDFObject_number_float(0),
-                    PDFObject_number_float(0),
-                    PDFObject_number_float(595.28),
-                    PDFObject_number_float(841.89),
-                    NULL,
-                })),
-                PDF_entry("Resources", PDFObject_dictionary((PDFObject_Dictionary_Entry[]){
-                    PDF_entry("Font",PDFObject_dictionary((PDFObject_Dictionary_Entry[]){
-                        PDF_entry("F1",PDFObject_refrence(font,0)),
+                PDF_entry("Font",PDFObject_dictionary((PDFObject_Dictionary_Entry[]){
+                    PDF_entry("F1", PDFObject_dictionary((PDFObject_Dictionary_Entry[]){
+                        PDF_entry("Type", PDFObject_name("Font")),
+                        PDF_entry("Subtype", PDFObject_name("Type1")),
+                        PDF_entry("BaseFont", PDFObject_name("Helvetica")),
                         {0},
                     })),
                     {0},
                 })),
-                PDF_entry("Contents", PDFObject_refrence(page_content,0)),
                 {0},
             })
         ),
-        PDFObject_indirect(
-            page_content,0,
-            PDFObject_stream(
-                sv_alloc_ContentStream(&sa, (PDFInstruction[]){
-                    PDFinstruction("BT",NULL),
-                    PDFinstruction("Tf",(PDFObject*[]){PDFObject_name("F1"),PDFObject_number_unsigned(26),NULL,}),
-                    PDFinstruction("Td",(PDFObject*[]){PDFObject_number_unsigned(80),PDFObject_number_unsigned(770),NULL,}),
-                    PDFinstruction("Tj",(PDFObject*[]){PDFObject_string_alloc(&sa,"MAN THIS WORKY!"),NULL,}),
-                    PDFinstruction("ET",NULL),
+        PDFPage(page, pages, 0, 0, 595.28, 841.89, resources, page_content),
+        PDFContentStream(page_content, &sa, (PDFInstruction[]){
+            PDFinstruction("BT",NULL),
+            PDFinstruction("Tf",(PDFObject*[]){PDFObject_name("F1"),PDFObject_number_unsigned(26),NULL,}),
+            PDFinstruction("Td",(PDFObject*[]){PDFObject_number_unsigned(80),PDFObject_number_unsigned(770),NULL,}),
+            PDFinstruction("Tj",(PDFObject*[]){PDFObject_string_alloc(&sa,"MAN THIS WORKY!"),NULL,}),
+            PDFinstruction("ET",NULL),
 
-                    PDFinstruction("BT",NULL),
-                    PDFinstruction("Tf",(PDFObject*[]){PDFObject_name("F1"),PDFObject_number_unsigned(13),NULL,}),
-                    PDFinstruction("Td",(PDFObject*[]){PDFObject_number_unsigned(50),PDFObject_number_unsigned(550),NULL,}),
-                    PDFinstruction("Tj",(PDFObject*[]){PDFObject_string_alloc(&sa,"Firsto!"),NULL,}),
-                    PDFinstruction("ET",NULL),
-                    {0},
-                })
-            )
-        ),
+            PDFinstruction("BT",NULL),
+            PDFinstruction("Tf",(PDFObject*[]){PDFObject_name("F1"),PDFObject_number_unsigned(13),NULL,}),
+            PDFinstruction("Td",(PDFObject*[]){PDFObject_number_unsigned(50),PDFObject_number_unsigned(550),NULL,}),
+            PDFinstruction("Tj",(PDFObject*[]){PDFObject_string_alloc(&sa,"Firsto!"),NULL,}),
+            PDFinstruction("ET",NULL),
+            {0},
+        }),
     };
 
     String_Builder sb = {0};
