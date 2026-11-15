@@ -8,6 +8,7 @@
 #include "darray.h"
 #include <stdarg.h>
 #include "stb_truetype.h"
+#include "stb_image.h"
 
 typedef struct{
     char* items;
@@ -213,6 +214,11 @@ typedef struct{
     size_t generation;
 } PDFObject_Refrence;
 
+typedef struct{
+    PDFObject* dictionary;
+    String_View sv;
+} PDFObject_Stream;
+
 //i should use atom table for strings tbh
 
 struct PDFObject{
@@ -226,7 +232,7 @@ struct PDFObject{
         Atom name;
         PDFObject_Array array;
         PDFObject_Dictionary dictionary;
-        String_View stream;
+        PDFObject_Stream stream;
         //NULL is nothing
         PDFObject_Refrence refrence;
     };
@@ -307,12 +313,8 @@ PDFObject* PDFObject_dictionary_(PDFObject_Dictionary_Entry* items){ //last has 
     return PDFObject_init(dictionary);
 }
 
-PDFObject* PDFObject_stream(String_View sv){
-    return PDFObject_init((PDFObject){
-        .type = PDF_OBJECT_STREAM,
-        .stream = sv,
-    });
-}
+#define PDFObject_dictionary(...) PDFObject_dictionary_(((PDFObject_Dictionary_Entry[]){__VA_ARGS__, {0}})) 
+#define PDFObject_array(...) PDFObject_array_(((PDFObject*[]){__VA_ARGS__, NULL})) 
 
 PDFObject* PDFObject_null(String_View sv){
     return PDFObject_init((PDFObject){
@@ -352,6 +354,23 @@ PDFObject_Dictionary_Entry PDF_entry(const char* key, PDFObject* value){
     };
 }
 
+//dictionary can be NULL
+PDFObject* PDFObject_stream(String_View sv, PDFObject* dictionary){
+    PDFObject_Dictionary_Entry entry = PDF_entry("Length",PDFObject_number_unsigned(sv.len));
+    if(!dictionary) dictionary = PDFObject_dictionary(entry);
+    else {
+        assert(dictionary->type == PDF_OBJECT_DICTIONARY && "WTF");
+        da_push(&dictionary->dictionary,entry);
+    }
+
+    return PDFObject_init((PDFObject){
+        .type = PDF_OBJECT_STREAM,
+        .stream.sv = sv,
+        .stream.dictionary = dictionary,
+    });
+}
+
+
 typedef struct{
     size_t id;
     size_t generation;
@@ -383,8 +402,9 @@ void write_PDFObject(String_Builder* sb, PDFObject* object){
     switch(object->type){
         case PDF_OBJECT_BOOLEAN: sb_append(sb, object->boolean ? "true" : "false"); break;
         case PDF_OBJECT_STREAM: {
-            sb_appendf(sb, "<< /Length %zu >> stream\n",object->stream.len);
-            sb_append_sv(sb,object->stream);
+            write_PDFObject(sb, object->stream.dictionary);
+            sb_appendf(sb, " stream\n");
+            sb_append_sv(sb,object->stream.sv);
             sb_append(sb,"endstream");
         } break;
         case PDF_OBJECT_STRING: sb_appendf(sb,"(%.*s)",object->string.len,str_from_sv(object->string)); break;
@@ -530,9 +550,6 @@ String_View sv_alloc_ContentStream(String_Builder* sb, PDFInstruction* instructi
     return sv;
 }
 
-#define PDFObject_dictionary(...) PDFObject_dictionary_(((PDFObject_Dictionary_Entry[]){__VA_ARGS__, {0}})) 
-#define PDFObject_array(...) PDFObject_array_(((PDFObject*[]){__VA_ARGS__, NULL})) 
-
 PDFObject_Indirect PDFCatalogue(size_t id, size_t pages_tree){
     return PDFObject_indirect_catalogue(
         id,0,
@@ -567,7 +584,7 @@ PDFObject_Indirect PDFPages_(size_t id,PDFObject_Array* tmp, size_t* pages){
 PDFObject_Indirect PDFContentStream_(size_t id, String_Builder* sb, PDFInstruction* instructions){
     return PDFObject_indirect(
         id,0,
-        PDFObject_stream(sv_alloc_ContentStream(sb, instructions))
+        PDFObject_stream(sv_alloc_ContentStream(sb, instructions),NULL)
     );
 }
 #define PDFContentStream(ID,SB,...) PDFContentStream_((ID),(SB),((PDFInstruction[]){__VA_ARGS__,{0}}))
@@ -614,7 +631,7 @@ int PDFFont(PDFObject_Indirects* pdf, String_Builder* sb,PDFObject_Array* tmp, s
 
     da_push(pdf, PDFObject_indirect(
         font_stream_id,0,
-        PDFObject_stream(sv)
+        PDFObject_stream(sv,NULL)
     ));
 
     stbtt_fontinfo font = {0};
@@ -678,6 +695,40 @@ int PDFFont(PDFObject_Indirects* pdf, String_Builder* sb,PDFObject_Array* tmp, s
     return 0;
 }
 
+PDFObject_Indirect PDFJPG(String_Builder* sb,size_t id,const char* filepath){
+    FILE* f = fopen(filepath,"rb");
+    if(!f) assert(false && "not found");
+
+    fseek(f,0,SEEK_END);
+    size_t size = ftell(f);
+    fseek(f,0,SEEK_SET);
+
+    String_View sv = {.sb = sb, .offset = sb->len,.len = size};
+    da_reserve(sb,size);
+    fread(sb->items+sb->len,1,size,f);
+    sb->len += size;
+    fclose(f);
+
+    int width,height,channels;
+    stbi_info_from_memory(str_from_sv(sv), sv.len, &width, &height, &channels);
+
+    return PDFObject_indirect(
+        id, 0,
+        PDFObject_stream(
+            sv,
+            PDFObject_dictionary(
+                PDF_entry("Type", PDFObject_name("XObject")),
+                PDF_entry("Subtype", PDFObject_name("Image")),
+                PDF_entry("Width", PDFObject_number_signed(width)),
+                PDF_entry("Height", PDFObject_number_signed(height)),
+                PDF_entry("ColorSpace", PDFObject_name("DeviceRGB")),
+                PDF_entry("BitsPerComponent", PDFObject_number_unsigned(8)),
+                PDF_entry("Filter", PDFObject_name("DCTDecode"))
+            )
+        )
+    );
+}
+
 int main(int argc, char** argv){
     if(argc < 2){
         fprintf(stderr,"Provide filename\n");
@@ -693,6 +744,7 @@ int main(int argc, char** argv){
     size_t font = ++ids;
     size_t font_descriptor = ++ids;
     size_t font_stream = ++ids;
+    size_t jimbo = ++ids;
     String_Builder sa = {0};
     PDFObject_Array tmp = {0};
 
@@ -704,11 +756,26 @@ int main(int argc, char** argv){
         PDFObject_dictionary(
             PDF_entry("Font",PDFObject_dictionary(
                 PDF_entry("F1", PDFObject_refrence(font,0))
+            )),
+            PDF_entry("XObject",PDFObject_dictionary(
+                PDF_entry("Im1", PDFObject_refrence(jimbo,0))
             ))
         )
     ));
     da_push(&pdf,PDFPage(page, pages, 0, 0, 595.28, 841.89, resources, page_content));
     da_push(&pdf,PDFContentStream(page_content, &sa,
+        PDFinstruction(q),
+        PDFinstruction(cm,
+            PDFObject_number_unsigned(400),
+            PDFObject_number_unsigned(0),
+            PDFObject_number_unsigned(0),
+            PDFObject_number_unsigned(300),
+            PDFObject_number_unsigned(100),
+            PDFObject_number_unsigned(200)
+        ),
+        PDFinstruction(Do,PDFObject_name("Im1")),
+        PDFinstruction(Q),
+
         PDFinstruction(BT),
         PDFinstruction(Tf,PDFObject_name("F1"),PDFObject_number_unsigned(26)),
         PDFinstruction(Td,PDFObject_number_unsigned(80),PDFObject_number_unsigned(770)),
@@ -721,6 +788,7 @@ int main(int argc, char** argv){
         PDFinstruction(Tj,PDFObject_string_alloc(&sa,"Firsto!")),
         PDFinstruction(ET)
     ));
+    da_push(&pdf,PDFJPG(&sa,jimbo,"jimbo.jpg"));
     if(PDFFont(&pdf, &sa,&tmp, font,font_stream, font_descriptor, "fonts/font.ttf", "AgravePro") != 0) return 1;
 
     String_Builder sb = {0};
