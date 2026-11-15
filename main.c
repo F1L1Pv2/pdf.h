@@ -17,12 +17,12 @@ typedef struct{
 
 int sb_appendf(String_Builder* sb, const char* fmt, ...){
     va_list list;
-    va_start(list);
+    va_start(list,fmt);
     int len = vsnprintf(NULL,0,fmt,list);
     va_end(list);
     if(len <= 0) return 0;
     da_reserve(sb,len+1);
-    va_start(list);
+    va_start(list,fmt);
     vsprintf(sb->items+sb->len,fmt,list);
     va_end(list);
     sb->len += len;
@@ -54,7 +54,7 @@ typedef struct{
 String_View sv_allocf(String_Builder* sb, const char* fmt, ...){
     String_View sv = {.sb = sb,.offset = sb->len };
     va_list list;
-    va_start(list);
+    va_start(list,fmt);
     sb_appendf(sb,fmt,list);
     va_end(list);
     sv.len = sb->len - sv.offset;
