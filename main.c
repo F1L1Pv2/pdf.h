@@ -284,7 +284,7 @@ PDFObject* PDFObject_name(const char* name){
     });
 }
 
-PDFObject* PDFObject_array(PDFObject** items){ //last has to be NULL
+PDFObject* PDFObject_array_(PDFObject** items){ //last has to be NULL
     PDFObject array = {
         .type = PDF_OBJECT_ARRAY,
     };
@@ -295,7 +295,7 @@ PDFObject* PDFObject_array(PDFObject** items){ //last has to be NULL
     return PDFObject_init(array);
 }
 
-PDFObject* PDFObject_dictionary(PDFObject_Dictionary_Entry* items){ //last has to be NULL
+PDFObject* PDFObject_dictionary_(PDFObject_Dictionary_Entry* items){ //last has to be NULL
     PDFObject dictionary = {
         .type = PDF_OBJECT_DICTIONARY,
     };
@@ -500,12 +500,13 @@ typedef struct{
     PDFObject** operands;
 } PDFInstruction;
 
-PDFInstruction PDFinstruction(const char* name, PDFObject** operands){
+PDFInstruction PDFinstruction_(const char* name, PDFObject** operands){
     return (PDFInstruction){
         .instruction = atom_from_str(name),
         .operands = operands,
     };
 }
+#define PDFinstruction(NAME,...) PDFinstruction_((#NAME),((PDFObject*[]){__VA_ARGS__ __VA_OPT__(,) NULL}))
 
 String_View sv_alloc_ContentStream(String_Builder* sb, PDFInstruction* instructions){
     String_View sv = {.sb = sb, .offset = sb->len };
@@ -527,19 +528,21 @@ String_View sv_alloc_ContentStream(String_Builder* sb, PDFInstruction* instructi
     return sv;
 }
 
+#define PDFObject_dictionary(...) PDFObject_dictionary_(((PDFObject_Dictionary_Entry[]){__VA_ARGS__, {0}})) 
+#define PDFObject_array(...) PDFObject_array_(((PDFObject*[]){__VA_ARGS__, NULL})) 
+
 PDFObject_Indirect PDFCatalogue(size_t id, size_t pages_tree){
     return PDFObject_indirect_catalogue(
         id,0,
-        PDFObject_dictionary((PDFObject_Dictionary_Entry[]){
+        PDFObject_dictionary(
             PDF_entry("Type", PDFObject_name("Catalog")),
-            PDF_entry("Pages", PDFObject_refrence(pages_tree,0)),
-            {0},
-        })
+            PDF_entry("Pages", PDFObject_refrence(pages_tree,0))
+        )
     );
 }
 
  //last page has to be 0
-PDFObject_Indirect PDFPages(size_t id,PDFObject_Array* tmp, size_t* pages){
+PDFObject_Indirect PDFPages_(size_t id,PDFObject_Array* tmp, size_t* pages){
     size_t* page = pages;
     tmp->len = 0;
     while(*page){
@@ -550,41 +553,45 @@ PDFObject_Indirect PDFPages(size_t id,PDFObject_Array* tmp, size_t* pages){
 
     return PDFObject_indirect(
         id,0,
-        PDFObject_dictionary((PDFObject_Dictionary_Entry[]){
+        PDFObject_dictionary(
             PDF_entry("Type", PDFObject_name("Pages")),
-            PDF_entry("Kids", PDFObject_array(tmp->items)),
-            PDF_entry("Count", PDFObject_number_unsigned(tmp->len-1)),
-            {0},
-        })
+            PDF_entry("Kids", PDFObject_array_(tmp->items)),
+            PDF_entry("Count", PDFObject_number_unsigned(tmp->len-1))
+        )
     );
 }
+#define PDFPages(ID,TMP,...) PDFPages_((ID),(TMP),((size_t[]){__VA_ARGS__, 0})) 
 
-PDFObject_Indirect PDFContentStream(size_t id, String_Builder* sb, PDFInstruction* instructions){
+PDFObject_Indirect PDFContentStream_(size_t id, String_Builder* sb, PDFInstruction* instructions){
     return PDFObject_indirect(
         id,0,
         PDFObject_stream(sv_alloc_ContentStream(sb, instructions))
     );
 }
+#define PDFContentStream(ID,SB,...) PDFContentStream_((ID),(SB),((PDFInstruction[]){__VA_ARGS__,{0}}))
 
 PDFObject_Indirect PDFPage(size_t id, size_t parent_id, float lx, float ly, float ux, float uy, size_t resources_id, size_t contents_id){
     return PDFObject_indirect(
         id,0,
-        PDFObject_dictionary((PDFObject_Dictionary_Entry[]){
+        PDFObject_dictionary(
             PDF_entry("Type", PDFObject_name("Page")),
             PDF_entry("Parent", PDFObject_refrence(parent_id,0)),
-            PDF_entry("MediaBox", PDFObject_array((PDFObject*[]){
+            PDF_entry("MediaBox", PDFObject_array(
                 PDFObject_number_float(lx),
                 PDFObject_number_float(ly),
                 PDFObject_number_float(ux),
-                PDFObject_number_float(uy),
-                NULL,
-            })),
+                PDFObject_number_float(uy)
+            )),
             PDF_entry("Resources", PDFObject_refrence(resources_id,0)),
-            PDF_entry("Contents", PDFObject_refrence(contents_id,0)),
-            {0},
-        })
+            PDF_entry("Contents", PDFObject_refrence(contents_id,0))
+        )
     );
 }
+
+typedef struct{
+    PDFObject_Indirect* items;
+    size_t len,cap;
+} PDFObject_Indirects;
 
 int main(int argc, char** argv){
     if(argc < 2){
@@ -601,44 +608,39 @@ int main(int argc, char** argv){
     String_Builder sa = {0};
     PDFObject_Array tmp = {0};
 
-    PDFObject_Indirect pdf[] = {
-        PDFCatalogue(catalogue,pages),
-        PDFPages(pages,&tmp,(size_t[]){page,0}),
-        PDFObject_indirect(
-            resources,0,
-            PDFObject_dictionary((PDFObject_Dictionary_Entry[]){
-                PDF_entry("Font",PDFObject_dictionary((PDFObject_Dictionary_Entry[]){
-                    PDF_entry("F1", PDFObject_dictionary((PDFObject_Dictionary_Entry[]){
-                        PDF_entry("Type", PDFObject_name("Font")),
-                        PDF_entry("Subtype", PDFObject_name("Type1")),
-                        PDF_entry("BaseFont", PDFObject_name("Helvetica")),
-                        {0},
-                    })),
-                    {0},
-                })),
-                {0},
-            })
-        ),
-        PDFPage(page, pages, 0, 0, 595.28, 841.89, resources, page_content),
-        PDFContentStream(page_content, &sa, (PDFInstruction[]){
-            PDFinstruction("BT",NULL),
-            PDFinstruction("Tf",(PDFObject*[]){PDFObject_name("F1"),PDFObject_number_unsigned(26),NULL,}),
-            PDFinstruction("Td",(PDFObject*[]){PDFObject_number_unsigned(80),PDFObject_number_unsigned(770),NULL,}),
-            PDFinstruction("Tj",(PDFObject*[]){PDFObject_string_alloc(&sa,"MAN THIS WORKY!"),NULL,}),
-            PDFinstruction("ET",NULL),
+    PDFObject_Indirects pdf = {0};
+    da_push(&pdf, PDFCatalogue(catalogue,pages));
+    da_push(&pdf, PDFPages(pages,&tmp,page));
+    da_push(&pdf, PDFObject_indirect(
+        resources,0,
+        PDFObject_dictionary(
+            PDF_entry("Font",PDFObject_dictionary(
+                PDF_entry("F1", PDFObject_dictionary(
+                    PDF_entry("Type", PDFObject_name("Font")),
+                    PDF_entry("Subtype", PDFObject_name("Type1")),
+                    PDF_entry("BaseFont", PDFObject_name("Helvetica"))
+                ))
+            ))
+        )
+    ));
+    da_push(&pdf,PDFPage(page, pages, 0, 0, 595.28, 841.89, resources, page_content));
+    da_push(&pdf,PDFContentStream(page_content, &sa,
+        PDFinstruction(BT),
+        PDFinstruction(Tf,PDFObject_name("F1"),PDFObject_number_unsigned(26)),
+        PDFinstruction(Td,PDFObject_number_unsigned(80),PDFObject_number_unsigned(770)),
+        PDFinstruction(Tj,PDFObject_string_alloc(&sa,"MAN THIS WORKY!")),
+        PDFinstruction(ET),
 
-            PDFinstruction("BT",NULL),
-            PDFinstruction("Tf",(PDFObject*[]){PDFObject_name("F1"),PDFObject_number_unsigned(13),NULL,}),
-            PDFinstruction("Td",(PDFObject*[]){PDFObject_number_unsigned(50),PDFObject_number_unsigned(550),NULL,}),
-            PDFinstruction("Tj",(PDFObject*[]){PDFObject_string_alloc(&sa,"Firsto!"),NULL,}),
-            PDFinstruction("ET",NULL),
-            {0},
-        }),
-    };
+        PDFinstruction(BT),
+        PDFinstruction(Tf,PDFObject_name("F1"),PDFObject_number_unsigned(13)),
+        PDFinstruction(Td,PDFObject_number_unsigned(50),PDFObject_number_unsigned(550)),
+        PDFinstruction(Tj,PDFObject_string_alloc(&sa,"Firsto!")),
+        PDFinstruction(ET)
+    ));
 
     String_Builder sb = {0};
     Objects objects = {0};
-    if(write_pdf(&sb, &objects,pdf,sizeof pdf/sizeof *pdf) != 0) return 1;
+    if(write_pdf(&sb, &objects,pdf.items,pdf.len) != 0) return 1;
 
     FILE* f = fopen(argv[1], "wb");
     fwrite(sb.items,1,sb.len,f);
