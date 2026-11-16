@@ -1,6 +1,4 @@
 main
 *.pdf
-*.ttf
 *.o
 fonts
-*.jpg
